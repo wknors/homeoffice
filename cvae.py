@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import PIL
 import imageio
 import IPython
+from datetime import datetime
 from IPython import display
 
 from model import CVAE, reparameterize
@@ -19,7 +20,7 @@ BATCH_SIZE = 128
 TEST_BUF = 10000
 
 optimizer = tf.keras.optimizers.Adam(1e-4)
-epochs = 100
+epochs = 30
 latent_dim = 50
 num_examples_to_generate = 16
 
@@ -45,6 +46,8 @@ test_images[test_images < .5] = 0.
 train_dataset = tf.data.Dataset.from_tensor_slices(train_images).shuffle(TRAIN_BUF).batch(BATCH_SIZE)
 test_dataset = tf.data.Dataset.from_tensor_slices(test_images).shuffle(TEST_BUF).batch(BATCH_SIZE)
 
+sample_imgs_ds = tf.data.Dataset.from_tensor_slices(test_images[:5]).batch(5)
+
 
 # ----------------------------------------------------------------------------------------------------------------------
 # LOSS METHODS
@@ -66,13 +69,13 @@ def compute_loss(model, x):
     logpx_z = -tf.reduce_sum(cross_ent, axis=[1, 2, 3])
     logpz = log_normal_pdf(z, 0., 0.)
     logqz_x = log_normal_pdf(z, mean, logvar)
-    return -tf.reduce_mean(logpx_z + logpz - logqz_x)
+    return -tf.reduce_mean(logpx_z + logpz - logqz_x), x_logit
 
 
 @tf.function
 def compute_apply_gradients(model, x, optimizer):
     with tf.GradientTape() as tape:
-        loss = compute_loss(model, x)
+        loss, reconstruction = compute_loss(model, x)
     gradients = tape.gradient(loss, model.trainable_variables)
     optimizer.apply_gradients(zip(gradients, model.trainable_variables))
 
@@ -80,13 +83,16 @@ def compute_apply_gradients(model, x, optimizer):
 # ----------------------------------------------------------------------------------------------------------------------
 # IMAGE METHODS
 # ----------------------------------------------------------------------------------------------------------------------
+generate = False
+
+
 def generate_and_save_images(model, epoch, test_input):
     predictions = model.sample(test_input)
-    fig = plt.figure(figsize=(4,4))
+    fig = plt.figure(figsize=(4, 4))
 
-    for i in range(predictions.shape[0]):
-        plt.subplot(4, 4, i+1)
-        plt.imshow(predictions[i, :, :, 0], cmap='gray')
+    for ii in range(predictions.shape[0]):
+        plt.subplot(4, 4, ii+1)
+        plt.imshow(predictions[ii, :, :, 0], cmap='gray')
         plt.axis('off')
 
     # tight_layout minimizes the overlap between 2 sub-plots
@@ -100,6 +106,13 @@ def display_image(epoch_no):
 
 
 # ----------------------------------------------------------------------------------------------------------------------
+# LOGGING
+# ----------------------------------------------------------------------------------------------------------------------
+logdir = 'logs/' + datetime.now().strftime("%Y%m%d-%H%M%S")
+train_writer = tf.summary.create_file_writer(logdir + '/train')
+test_writer = tf.summary.create_file_writer(logdir + '/test')
+
+# ----------------------------------------------------------------------------------------------------------------------
 # TRAINING
 # ----------------------------------------------------------------------------------------------------------------------
 # keeping the random vector constant for generation (prediction) so
@@ -108,8 +121,8 @@ random_vector_for_generation = tf.random.normal(
     shape=[num_examples_to_generate, latent_dim])
 model = CVAE(latent_dim)
 
-
-generate_and_save_images(model, 0, random_vector_for_generation)
+if generate:
+    generate_and_save_images(model, 0, random_vector_for_generation)
 
 for epoch in range(1, epochs + 1):
     start_time = time.time()
@@ -120,37 +133,43 @@ for epoch in range(1, epochs + 1):
     if epoch % 1 == 0:
         loss = tf.keras.metrics.Mean()
         for test_x in test_dataset:
-            loss(compute_loss(model, test_x))
+            total_loss, _ = compute_loss(model, test_x)
+            loss(total_loss)
         elbo = -loss.result()
         display.clear_output(wait=False)
         print('Epoch: {}, Test set ELBO: {}, '
               'time elapse for current epoch {}'.format(epoch,
                                                         elbo,
                                                         end_time - start_time))
-        generate_and_save_images(
-            model, epoch, random_vector_for_generation)
+        if generate:
+            generate_and_save_images(model, epoch, random_vector_for_generation)
 
+    if epoch % 10 == 0:
+        for sample_imgs in sample_imgs_ds:
+            _, reconstruction = compute_loss(model, sample_imgs)
+            with test_writer.as_default():
+                tf.summary.image('Reconstructions', reconstruction, step=epoch, max_outputs=5)
 
-plt.imshow(display_image(epochs))
-plt.axis('off')  # Display images
+if generate:
+    plt.imshow(display_image(epochs))
+    plt.axis('off')  # Display images
 
-anim_file = 'cvae.gif'
+    anim_file = 'cvae.gif'
 
-with imageio.get_writer(anim_file, mode='I') as writer:
-    filenames = glob.glob('image*.png')
-    filenames = sorted(filenames)
-    last = -1
-    for i, filename in enumerate(filenames):
-        frame = 2*(i**0.5)
-        if round(frame) > round(last):
-            last = frame
-        else:
-            continue
+    with imageio.get_writer(anim_file, mode='I') as writer:
+        filenames = glob.glob('image*.png')
+        filenames = sorted(filenames)
+        last = -1
+        for i, filename in enumerate(filenames):
+            frame = 2*(i**0.5)
+            if round(frame) > round(last):
+                last = frame
+            else:
+                continue
+            image = imageio.imread(filename)
+            writer.append_data(image)
         image = imageio.imread(filename)
         writer.append_data(image)
-    image = imageio.imread(filename)
-    writer.append_data(image)
 
-
-if IPython.version_info >= (6, 2, 0, ''):
-    display.Image(filename=anim_file)
+    if IPython.version_info >= (6, 2, 0, ''):
+        display.Image(filename=anim_file)
