@@ -57,6 +57,23 @@ def image_grid():
     return figure
 
 
+def plot_orig_with_recon(original, reconstruction):
+    fig = plt.figure(figsize=(10, 10))
+    plt.subplot(2, 1, 1)
+    plt.xticks([])
+    plt.yticks([])
+    plt.grid(False)
+    plt.imshow(np.squeeze(original), cmap=plt.cm.binary)
+
+    plt.subplot(2, 1, 2)
+    plt.xticks([])
+    plt.yticks([])
+    plt.grid(False)
+    plt.imshow(np.squeeze(reconstruction), cmap=plt.cm.binary)
+
+    return fig
+
+
 # Prepare the plot
 figure = image_grid()
 # Convert to image and log

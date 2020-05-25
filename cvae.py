@@ -10,18 +10,19 @@ from datetime import datetime
 from IPython import display
 
 from model import CVAE, reparameterize
+from logging_util import plot_to_image, plot_orig_with_recon
 
 # ----------------------------------------------------------------------------------------------------------------------
 # PARAMS
 # ----------------------------------------------------------------------------------------------------------------------
 TRAIN_BUF = 60000
-BATCH_SIZE = 128
+BATCH_SIZE = 32
 
 TEST_BUF = 10000
 
 optimizer = tf.keras.optimizers.Adam(1e-4)
-epochs = 30
-latent_dim = 50
+epochs = 500
+latent_dim = 10
 num_examples_to_generate = 16
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -121,9 +122,21 @@ random_vector_for_generation = tf.random.normal(
     shape=[num_examples_to_generate, latent_dim])
 model = CVAE(latent_dim)
 
+# Create images at epoch 0, i.e. without any training
 if generate:
     generate_and_save_images(model, 0, random_vector_for_generation)
 
+for sample_img_batch in sample_imgs_ds:
+    _, reconstruction_batch = compute_loss(model, sample_img_batch)
+    # for sample_img, reconstruction in zip(sample_img_batch, reconstruction_batch):
+    #     comparison = plot_to_image(plot_orig_with_recon(sample_img, reconstruction))
+    comparison_list = [plot_to_image(plot_orig_with_recon(sample_img, reconstruction), add_batch_dim=False)
+                       for sample_img, reconstruction in zip(sample_img_batch, reconstruction_batch)]
+    comparison_batch = tf.stack(comparison_list, axis=0)
+    with test_writer.as_default():
+        tf.summary.image('Reconstructions', comparison_batch, step=0, max_outputs=5)
+
+# Start training
 for epoch in range(1, epochs + 1):
     start_time = time.time()
     for train_x in train_dataset:
@@ -145,10 +158,15 @@ for epoch in range(1, epochs + 1):
             generate_and_save_images(model, epoch, random_vector_for_generation)
 
     if epoch % 10 == 0:
-        for sample_imgs in sample_imgs_ds:
-            _, reconstruction = compute_loss(model, sample_imgs)
+        for sample_img_batch in sample_imgs_ds:
+            _, reconstruction_batch = compute_loss(model, sample_img_batch)
+            # for sample_img, reconstruction in zip(sample_img_batch, reconstruction_batch):
+            #     comparison = plot_to_image(plot_orig_with_recon(sample_img, reconstruction))
+            comparison_list = [plot_to_image(plot_orig_with_recon(sample_img, reconstruction), add_batch_dim=False)
+                               for sample_img, reconstruction in zip(sample_img_batch, reconstruction_batch)]
+            comparison_batch = tf.stack(comparison_list, axis=0)
             with test_writer.as_default():
-                tf.summary.image('Reconstructions', reconstruction, step=epoch, max_outputs=5)
+                tf.summary.image('Reconstructions', comparison_batch, step=epoch, max_outputs=5)
 
 if generate:
     plt.imshow(display_image(epochs))
