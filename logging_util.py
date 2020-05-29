@@ -40,7 +40,7 @@ def plot_to_image(figure, add_batch_dim=True):
 
 def log_reconstruction_comparison(sample_images, model, epoch, summary_writer, max_outputs=5):
     for sample_img_batch in sample_images:
-        _, reconstruction_batch = model.compute_loss(sample_img_batch)
+        reconstruction_batch = model.reconstruct(sample_img_batch)
         comparison_list = [plot_to_image(plot_orig_with_recon(sample_img, reconstruction), add_batch_dim=False)
                            for sample_img, reconstruction in zip(sample_img_batch, reconstruction_batch)]
         comparison_batch = tf.stack(comparison_list, axis=0)

@@ -111,7 +111,7 @@ for epoch in range(1, epochs + 1):
     if epoch % 10 == 0:
         loss = tf.keras.metrics.Mean()
         for valid_x in valid_dataset:
-            total_loss, _ = model.compute_loss(valid_x)
+            total_loss = model.compute_loss(valid_x)
             loss(total_loss)
         elbo = -loss.result()
         display.clear_output(wait=False)
