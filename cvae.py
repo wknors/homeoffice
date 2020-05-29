@@ -1,16 +1,12 @@
 import tensorflow as tf
 import time
-import numpy as np
-import glob
 import matplotlib.pyplot as plt
 import PIL
-import imageio
-import IPython
 from datetime import datetime
 from IPython import display
 
-from model import CVAE, reparameterize
-from logging_util import plot_to_image, plot_orig_with_recon
+from model import CVAE
+from logging_util import log_reconstruction_comparison
 
 # ----------------------------------------------------------------------------------------------------------------------
 # PARAMS
@@ -21,7 +17,7 @@ BATCH_SIZE = 32
 TEST_BUF = 10000
 
 optimizer = tf.keras.optimizers.Adam(1e-4)
-epochs = 500
+epochs = 50
 latent_dim = 10
 num_examples_to_generate = 16
 
@@ -44,41 +40,14 @@ train_images[train_images < .5] = 0.
 test_images[test_images >= .5] = 1.
 test_images[test_images < .5] = 0.
 
-train_dataset = tf.data.Dataset.from_tensor_slices(train_images).shuffle(TRAIN_BUF).batch(BATCH_SIZE)
+# Split the formerly training set into training and test set
+train_val_dataset = tf.data.Dataset.from_tensor_slices(train_images).shuffle(TRAIN_BUF)
+train_dataset = train_val_dataset.take(int(train_images.shape[0])*0.8).batch(BATCH_SIZE)
+valid_dataset = train_val_dataset.skip(int(train_images.shape[0])*0.8).batch(BATCH_SIZE)
 test_dataset = tf.data.Dataset.from_tensor_slices(test_images).shuffle(TEST_BUF).batch(BATCH_SIZE)
 
+# Create a dataset of the first 5 images from the test set for visualizing the progress in reconstruction.
 sample_imgs_ds = tf.data.Dataset.from_tensor_slices(test_images[:5]).batch(5)
-
-
-# ----------------------------------------------------------------------------------------------------------------------
-# LOSS METHODS
-# ----------------------------------------------------------------------------------------------------------------------
-def log_normal_pdf(sample, mean, logvar, raxis=1):
-    log2pi = tf.math.log(2. * np.pi)
-    return tf.reduce_sum(
-        -.5 * ((sample - mean) ** 2. * tf.exp(-logvar) + logvar + log2pi),
-        axis=raxis)
-
-
-@tf.function
-def compute_loss(model, x):
-    mean, logvar = model.encode(x)
-    z = reparameterize(mean, logvar)
-    x_logit = model.decode(z)
-
-    cross_ent = tf.nn.sigmoid_cross_entropy_with_logits(logits=x_logit, labels=x)
-    logpx_z = -tf.reduce_sum(cross_ent, axis=[1, 2, 3])
-    logpz = log_normal_pdf(z, 0., 0.)
-    logqz_x = log_normal_pdf(z, mean, logvar)
-    return -tf.reduce_mean(logpx_z + logpz - logqz_x), x_logit
-
-
-@tf.function
-def compute_apply_gradients(model, x, optimizer):
-    with tf.GradientTape() as tape:
-        loss, reconstruction = compute_loss(model, x)
-    gradients = tape.gradient(loss, model.trainable_variables)
-    optimizer.apply_gradients(zip(gradients, model.trainable_variables))
 
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -111,6 +80,7 @@ def display_image(epoch_no):
 # ----------------------------------------------------------------------------------------------------------------------
 logdir = 'logs/' + datetime.now().strftime("%Y%m%d-%H%M%S")
 train_writer = tf.summary.create_file_writer(logdir + '/train')
+valid_writer = tf.summary.create_file_writer(logdir + '/valid')
 test_writer = tf.summary.create_file_writer(logdir + '/test')
 
 # ----------------------------------------------------------------------------------------------------------------------
@@ -126,68 +96,37 @@ model = CVAE(latent_dim)
 if generate:
     generate_and_save_images(model, 0, random_vector_for_generation)
 
-for sample_img_batch in sample_imgs_ds:
-    _, reconstruction_batch = compute_loss(model, sample_img_batch)
-    # for sample_img, reconstruction in zip(sample_img_batch, reconstruction_batch):
-    #     comparison = plot_to_image(plot_orig_with_recon(sample_img, reconstruction))
-    comparison_list = [plot_to_image(plot_orig_with_recon(sample_img, reconstruction), add_batch_dim=False)
-                       for sample_img, reconstruction in zip(sample_img_batch, reconstruction_batch)]
-    comparison_batch = tf.stack(comparison_list, axis=0)
-    with test_writer.as_default():
-        tf.summary.image('Reconstructions', comparison_batch, step=0, max_outputs=5)
+# First comparison of original and reconstructions before training begins
+log_reconstruction_comparison(
+            sample_images=sample_imgs_ds, model=model, epoch=0, summary_writer=test_writer
+        )
 
 # Start training
 for epoch in range(1, epochs + 1):
     start_time = time.time()
     for train_x in train_dataset:
-        compute_apply_gradients(model, train_x, optimizer)
+        model.compute_apply_gradients(train_x, optimizer)
     end_time = time.time()
 
-    if epoch % 1 == 0:
+    if epoch % 10 == 0:
         loss = tf.keras.metrics.Mean()
-        for test_x in test_dataset:
-            total_loss, _ = compute_loss(model, test_x)
+        for valid_x in valid_dataset:
+            total_loss, _ = model.compute_loss(valid_x)
             loss(total_loss)
         elbo = -loss.result()
         display.clear_output(wait=False)
-        print('Epoch: {}, Test set ELBO: {}, '
-              'time elapse for current epoch {}'.format(epoch,
-                                                        elbo,
-                                                        end_time - start_time))
+        print('Epoch: {}, Valid set ELBO: {}, '
+              'time elapse for current epoch {}'.format(epoch, elbo, end_time - start_time))
+
+        log_reconstruction_comparison(
+            sample_images=sample_imgs_ds, model=model, epoch=epoch, summary_writer=test_writer
+        )
+
         if generate:
             generate_and_save_images(model, epoch, random_vector_for_generation)
-
-    if epoch % 10 == 0:
-        for sample_img_batch in sample_imgs_ds:
-            _, reconstruction_batch = compute_loss(model, sample_img_batch)
-            # for sample_img, reconstruction in zip(sample_img_batch, reconstruction_batch):
-            #     comparison = plot_to_image(plot_orig_with_recon(sample_img, reconstruction))
-            comparison_list = [plot_to_image(plot_orig_with_recon(sample_img, reconstruction), add_batch_dim=False)
-                               for sample_img, reconstruction in zip(sample_img_batch, reconstruction_batch)]
-            comparison_batch = tf.stack(comparison_list, axis=0)
-            with test_writer.as_default():
-                tf.summary.image('Reconstructions', comparison_batch, step=epoch, max_outputs=5)
 
 if generate:
     plt.imshow(display_image(epochs))
     plt.axis('off')  # Display images
 
-    anim_file = 'cvae.gif'
-
-    with imageio.get_writer(anim_file, mode='I') as writer:
-        filenames = glob.glob('image*.png')
-        filenames = sorted(filenames)
-        last = -1
-        for i, filename in enumerate(filenames):
-            frame = 2*(i**0.5)
-            if round(frame) > round(last):
-                last = frame
-            else:
-                continue
-            image = imageio.imread(filename)
-            writer.append_data(image)
-        image = imageio.imread(filename)
-        writer.append_data(image)
-
-    if IPython.version_info >= (6, 2, 0, ''):
-        display.Image(filename=anim_file)
+# ToDo: Tensorboard hyperparameter tuning possible? Need to use model.fit + model.evaluate or custom ok?
